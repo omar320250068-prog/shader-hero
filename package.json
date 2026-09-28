@@ -1,0 +1,19 @@
+{
+  "name": "shader-hero",
+  "version": "1.0.0",
+  "description": "Single-file WebGL2/GLSL fragment-shader hero landing page (Shader Hero assignment)",
+  "type": "module",
+  "main": "index.html",
+  "scripts": {
+    "serve": "npx --yes serve ."
+  },
+  "keywords": [
+    "webgl",
+    "glsl",
+    "shader",
+    "fragment-shader",
+    "aurora",
+    "flow-field"
+  ],
+  "license": "MIT"
+}

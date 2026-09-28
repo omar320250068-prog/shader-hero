@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Omar Hindawy — Aurora Liquid Flow</title>
+<style>
+  /* ------------------------------------------------------------------ *
+   *  Base reset & layout: fullscreen canvas behind, hero content on top *
+   * ------------------------------------------------------------------ */
+
+  :root {
+    --ink: #f4f7ff;
+    --muted: #aeb8d6;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+    background: #05070f;                       /* deep space fallback */
+    color: var(--ink);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* The shader lives on a fixed, full-viewport canvas behind the text. */
+  #gl-canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    z-index: 0;
+  }
+
+  /* Content that renders above the shader. */
+  .hero {
+    position: relative;
+    z-index: 2;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 2rem;
+  }
+
+  /* Radial/vertical overlay to guarantee headline contrast against the
+     glow: darkening the edges (vignette) and the letterbox top/bottom. */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 90% 70% at 50% 55%, rgba(5, 7, 15, 0.0) 45%, rgba(5, 7, 15, 0.55) 100%),
+      linear-gradient(to bottom, rgba(5, 7, 15, 0.55), transparent 20%, transparent 70%, rgba(5, 7, 15, 0.6));
+  }
+
+  .eyebrow {
+    letter-spacing: 0.42em;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-shadow: 0 2px 18px rgba(0, 0, 0, 0.85);
+    margin-bottom: 1.1rem;
+  }
+
+  h1 {
+    font-size: clamp(2.6rem, 8vw, 6.5rem);
+    font-weight: 800;
+    line-height: 0.98;
+    letter-spacing: -0.02em;
+    background: linear-gradient(180deg, #ffffff 30%, #c4cdf4 90%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 4px 26px rgba(0, 0, 0, 0.65));
+    text-shadow: 0 2px 40px rgba(90, 140, 255, 0.25);
+  }
+
+  p.lede {
+    margin-top: 1.25rem;
+    max-width: 42rem;
+    font-size: clamp(1.0rem, 2.2vw, 1.35rem);
+    font-weight: 400;
+    color: #dbe2f7;
+    text-shadow: 0 2px 14px rgba(0, 0, 0, 0.9);
+  }
+
+  .cta {
+    margin-top: 2.25rem;
+    display: inline-block;
+    padding: 0.85rem 2.1rem;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.04em;
+    color: #060913;
+    background: linear-gradient(120deg, #b9d6ff, #e6e0ff);
+    box-shadow: 0 10px 40px rgba(20, 40, 120, 0.45);
+    text-decoration: none;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    text-shadow: none;
+  }
+
+  .cta:hover { transform: translateY(-2px); box-shadow: 0 16px 52px rgba(30, 60, 180, 0.55); }
+
+  .hint {
+    position: absolute;
+    bottom: 1.6rem;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 0.75rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: rgba(214, 222, 245, 0.55);
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.9);
+  }
+
+  /* CSS-only fallback when WebGL is unavailable. */
+  .fallback {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+      radial-gradient(120% 90% at 70% 20%, #1d2a5a 0%, #0d1330 42%, #05070f 100%);
+  }
+
+  .unsupported {
+    z-index: 3;
+  }
+</style>
+</head>
+<body>
+
+<!-- +------------------------------------------------------------------ *
+     |  TypeScript-hosted canvas: the shader owns the whole viewport.     |
+     +------------------------------------------------------------------ + -->
+<canvas id="gl-canvas" aria-hidden="true"></canvas>
+
+<!-- Readability layer (vignette + letterbox gradient), keeps text crisp. -->
+<div class="overlay" aria-hidden="true"></div>
+
+<!-- Hero content riding above the shader. -->
+<main class="hero">
+  <div class="eyebrow">Omar Hindawy &middot; Portfolio</div>
+  <h1>Aurora Liquid Flow</h1>
+  <p class="lede">
+    I sculpt light on the GPU — this aurora flow field is one living
+    fragment shader, drawn for every pixel, every frame.
+  </p>
+  <a class="cta" href="#enter" onclick="return false;">Enter the glow</a>
+  <div class="hint">move your cursor to stir the flow &middot; reduced-motion is honoured automatically</div>
+</main>
+
+<noscript><style>.hero{display:none}</style><p class="unsupported">Enable JavaScript to see the shader.</p></noscript>
+
+<script>
+/* ==================================================================== *
+ *  SHADER HERO — single-file WebGL2 fragment-shader hero page.          *
+ *                                                                        *
+ *  Structure:                                                            *
+ *    1. GLSL fragment shader (aurora / liquid flow field)                *
+ *    2. Minimal WebGL2 bootstrap (triangle, program, uniforms)           *
+ *    3. Render loop with responsible behaviour:                          *
+ *         - DPR clamped to 2                                             *
+ *         - paused when the tab is hidden / loses focus                  *
+ *         - honours prefers-reduced-motion (static frame)                *
+ *    4. Smooth mouse interpolation so u_mouse never jumps               *
+ * ==================================================================== */
+
+(function () {
+  "use strict";
+
+  const canvas = document.getElementById("gl-canvas");
+
+  /* ------------------------------------------------------------------ *
+   *  1. THE GLSL FRAGMENT SHADER                                        *
+   * ------------------------------------------------------------------ */
+  const FRAG = `
+precision highp float;
+
+uniform vec2  u_resolution;   // canvas size in device pixels
+uniform float u_time;         // seconds since first draw
+uniform vec2  u_mouse;        // mouse position in device pixels
+uniform float u_static;       // 1.0 => freeze time (reduced motion)
+
+/* --- fast hash + value noise ---------------------------------------- *
+ *  hash21: a cheap hasher that maps a 2D coordinate to a pseudo-random  *
+ *  scalar in [0,1]. vnoise bilinearly interpolates four hashes so its   *
+ *  output is smooth and derivative-friendly — the basis for fbm.        */
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p) {
+  vec2 i  = floor(p);
+  vec2 f  = fract(p);
+  vec2 u  = f * f * (3.0 - 2.0 * f);        // smoothstep curve (no branch)
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+/* --- fractional Brownian motion -------------------------------------- *
+ *  Sums octaves of value noise at increasing frequency and decreasing   *
+ *  amplitude; this gives the organic, cloud-like signal the aurora and  *
+ *  the flow field both feed on.                                         */
+float fbm(vec2 p) {
+  float v = 0.0;
+  float amp = 0.5;
+  float freq = 1.0;
+  for (int i = 0; i < 5; i++) {
+    v += amp * vnoise(p * freq);
+    freq *= 1.9;
+    amp  *= 0.55;
+  }
+  return v;
+}
+
+/* --- flow field ------------------------------------------------------ *
+ *  Returns a slowly turning direction vector per pixel. The angle is    *
+ *  driven by fbm over the (time-warped) position, so adjacent pixels    *
+ *  have similar flow and the whole field looks like moving liquid.      *
+ *  The mouse pulls a small swirl into the field near the cursor.        */
+vec2 flowField(vec2 uv, float t, vec2 mouseUV) {
+  vec2 q = uv * 1.5;
+  q.x += q.y * 0.6;                                  // shear -> diagonal drift
+  float angle = fbm(q + vec2(0.0, t * 0.22)) * 6.28318;
+  vec2 dir = vec2(cos(angle), sin(angle));
+
+  // Mouse influence: rotate the local flow around the cursor so the
+  // aurora visibly "swirls" where you point. Exponential falloff.
+  vec2 md = uv - mouseUV;
+  float pull = exp(-dot(md, md) * 7.0);
+  float swirlAngle = angle + 3.2 * pull;
+  dir = normalize(mix(dir, vec2(cos(swirlAngle), sin(swirlAngle)), pull));
+  return dir * 0.32;
+}
+
+/* --- procedural palette ---------------------------------------------- *
+ *  cos-palette from standard computer-graphics literature: t in [0,1]    *
+ *  maps to a hue band; the fixed coefficients pick our aurora identity — *
+ *  cold teal through violet into magenta, with warm copper highlights.   */
+vec3 palette(float t) {
+  return 0.5 + 0.5 * cos(6.28318 * (t + vec3(0.00, 0.33, 0.67))
+             + vec3(0.0, 2.0, 4.0) * 0.6);
+}
+
+/* --- main ------------------------------------------------------------ *
+ *  Composition, top to bottom:                                          *
+ *    1. UV normalization + aspect correction                            *
+ *    2. domain-warped aurora layers in a vertical envelope              *
+ *    3. mouse swirl mixing                                              *
+ *    4. film grain                                                      *
+ *    5. vignette + contrast composition                                 */
+void main() {
+  /* (1) UV normalization and aspect correction --------------------.
+   * gl_FragCoord is in device pixels with origin at bottom-left. We
+   * centre it on the origin and divide by the height only, so uv.x is
+   * width-normalised too and circles stay circles regardless of the
+   * window's aspect ratio (no stretching). */
+  vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+
+  // Same transform for the mouse so the cursor maps to the same space.
+  vec2 mouseUV = (u_mouse - 0.5 * u_resolution) / u_resolution.y;
+
+  /* (2) Time and the animated (or frozen) flow.
+   * Normalise the clock to a calm unit (~0.05 Hz), and when u_static
+   * is set (prefers-reduced-motion) pin t to a fixed epoch so the
+   * shader renders one beautiful, frozen frame instead of animating. */
+  float t = mix(u_time * 0.20, 3.7, u_static);
+
+  // Sample the flow field; warp the UV by it for liquid domain warping.
+  vec2 flow = flowField(uv, t, clamp(mouseUV, -0.6, 0.6));
+
+  /* Aurora body: three fbm layers compounded with smootherstep curves.
+   * Layer A is broad glow; B is the sharper "curtain" rippling; C adds
+   * fine filaments. Mixed by a vertical envelope so the energy sits in
+   * the top-middle band of the hero and fades toward the edges. */
+  vec2 q = uv * 2.1 + flow * 2.2;
+
+  float a = fbm(q + vec2(0.0, t * 0.18));
+  float b = fbm(q + flow * 2.5 + vec2(7.3, 1.9) - t * 0.07);
+  float c = fbm(q * 1.7 + flow * 3.5 + vec2(3.1, 9.2) + t * 0.09);
+
+  float glow  = smoothstep(0.35, 0.95, a) * 0.85;
+  float curtain = smoothstep(0.28, 0.85, b) * (0.75 + 0.25 * c);
+  float filament = pow(smoothstep(0.42, 0.92, 1.0 - abs(0.62 - c)), 2.0) * 0.5;
+
+  float band = glow + curtain * 0.55 + filament;
+  float envelope = exp(-pow((uv.y - 0.22) * 2.4, 2.0)); // centred a touch high
+  band *= envelope * 1.1;
+
+  /* A liquid pulse along the field: sinusoid of the fbm phase gives the
+   * "flowing water" shimmer without any branchy logic. */
+  float liquid = 0.5 + 0.5 * sin((a * 6.0 + c * 9.0) * 3.14159 - t * 1.4);
+  band += liquid * 0.12 * envelope;
+
+  // Colour the band with two palette slices for depth.
+  vec3 col = palette(0.42 + a * 0.35) * band + palette(0.78 + b * 0.22) * band * 0.55;
+
+  // Deep space base so the hero never looks washed out.
+  col += vec3(0.012, 0.020, 0.05);
+
+  /* (5) Film grain ------------------------------------------------.
+   * Add a faint hash-driven noise keyed to device pixels. When static
+   * mode is on the grain is disabled so the fallback frame is clean. */
+  float grain = (hash21(gl_FragCoord.xy + u_time * 160.0) - 0.5) * 0.025 * (1.0 - u_static);
+  col += grain;
+
+  /* Vignette + contrast composition ------------------------------.
+   * Multiply toward black at the frame edges, then a soft S-curve to
+   * open the shadows and lift the mids; finally clamp to [0,1]. */
+  float vig = smoothstep(1.55, 0.45, length(uv * vec2(u_resolution.x / u_resolution.y, 1.0)));
+  col *= vig * 0.92 + 0.08;
+  col = pow(col, vec3(0.92));                  // gentle gamma lift
+  col = clamp(col, 0.0, 1.0);
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+  /* ------------------------------------------------------------------ *
+   *  2. WEBGL BOOTSTRAP                                                *
+   * ------------------------------------------------------------------ */
+  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false })
+          || canvas.getContext("webgl", { antialias: false, alpha: false });
+
+  if (!gl) {
+    // No WebGL here — swap in the pure-CSS gradient fallback.
+    canvas.style.display = "none";
+    const fb = document.createElement("div");
+    fb.className = "fallback";
+    document.body.insertBefore(fb, canvas);
+    return;
+  }
+
+  const vertSrc = `
+  attribute vec2 a_pos;
+  void main() {
+    gl_Position = vec4(a_pos, 0.0, 1.0);
+  }`;
+
+  function compile(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      throw new Error("Shader compile failed: " + gl.getShaderInfoLog(sh));
+    }
+    return sh;
+  }
+
+  const program = gl.createProgram();
+  gl.attachShader(program, compile(gl.VERTEX_SHADER, vertSrc));
+  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, FRAG));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error("Link failed: " + gl.getProgramInfoLog(program));
+  }
+
+  // Fullscreen triangle: covers the viewport with no index buffer.
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(program, "a_pos");
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  const uRes      = gl.getUniformLocation(program, "u_resolution");
+  const uTime     = gl.getUniformLocation(program, "u_time");
+  const uMouse    = gl.getUniformLocation(program, "u_mouse");
+  const uStatic   = gl.getUniformLocation(program, "u_static");
+
+  /* ------------------------------------------------------------------ *
+   *  3. RESPONSIBLE PERFORMANCE                                        *
+   * ------------------------------------------------------------------ */
+
+  // (a) Clamp devicePixelRatio to 2 — full-res on 3x/4x phones wastes
+  //     GPU for a barely perceptible gain on a full-screen hero.
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  function resize() {
+    const w = Math.floor(window.innerWidth * DPR);
+    const h = Math.floor(window.innerHeight * DPR);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+      gl.viewport(0, 0, w, h);
+    }
+  }
+
+  /* Smooth mouse: target is the raw pointer position; we exponentially
+   * interpolate so u_mouse glides instead of snapping between frames. */
+  const mouse = { x: 0, y: 0, tx: 0, ty: 0 };
+  function onMove(e) {
+    const r = canvas.getBoundingClientRect();
+    // Mouse in device pixels, y flipped to match gl_FragCoord's origin.
+    mouse.tx = (e.clientX - r.left) * DPR;
+    mouse.ty = (r.height - (e.clientY - r.top)) * DPR;
+  }
+  // Fall-back for touch-only devices: ease to screen centre.
+  function noPointer() {
+    mouse.tx = canvas.width / 2;
+    mouse.ty = canvas.height * 0.62;
+  }
+  window.addEventListener("pointermove", onMove, { passive: true });
+  window.addEventListener("pointerdown", onMove, { passive: true });
+  noPointer();
+
+  // (b) Reduced motion: draw exactly one static frame, never loop.
+  const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const reducedMotion = motionQuery.matches;
+
+  // (c) Pause when hidden / unfocused; resume on visible / focus.
+  let running = false;
+  let rafId = 0;
+  let start = performance.now();
+
+  function draw(now) {
+    resize();
+
+    // Smooth the mouse toward its target (raw lerp is fine here — the
+    // float precision is far beyond visual sensitivity).
+    mouse.x += (mouse.tx - mouse.x) * 0.12;
+    mouse.y += (mouse.ty - mouse.y) * 0.12;
+
+    gl.useProgram(program);
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, (now - start) / 1000);
+    gl.uniform2f(uMouse, mouse.x, mouse.y);
+    gl.uniform1f(uStatic, reducedMotion ? 1.0 : 0.0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  function loop(now) {
+    if (running) {
+      draw(now);
+      rafId = requestAnimationFrame(loop);
+    }
+  }
+
+  function startLoop() {
+    if (running) return;
+    running = true;
+    start = performance.now();
+    rafId = requestAnimationFrame(loop);
+  }
+
+  function stopLoop() {
+    running = false;
+    cancelAnimationFrame(rafId);
+  }
+
+  function onVisibility() {
+    document.hidden ? stopLoop() : startLoop();
+  }
+  function onFocus()   { startLoop(); }
+  function onBlur()    { stopLoop(); }
+
+  if (reducedMotion) {
+    // Static frame: render once at the fixed epoch, never animate.
+    resize();
+    draw(performance.now());
+  } else {
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("resize", resize);
+    startLoop();
+  }
+})();
+</script>
+</body>
+</html>
